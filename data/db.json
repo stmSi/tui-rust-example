@@ -1,0 +1,23 @@
+[
+    {
+        "id": 3,
+        "name": "Yanw",
+        "category": "dogs",
+        "age": 2,
+        "created_at": "2022-09-01T12:00:00Z"
+    },
+    {
+        "id": 1,
+        "name": "Chip",
+        "category": "cats",
+        "age": 4,
+        "created_at": "2020-09-01T12:00:00Z"
+    },
+    {
+        "id": 2,
+        "name": "Chase",
+        "category": "cats",
+        "age": 3,
+        "created_at": "2021-09-01T12:00:00Z"
+    }
+]
