@@ -1,6 +1,6 @@
+use std::{fs, io};
 use std::{
-    io,
-    sync::mpsc::{self, Receiver},
+    sync::mpsc,
     thread,
     time::{Duration, Instant},
 };
@@ -10,8 +10,11 @@ use crossterm::{
     event::{self, Event as CTEvent, KeyCode},
     terminal::{disable_raw_mode, enable_raw_mode},
 };
+use rand::distributions::Alphanumeric;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use tui::widgets::{Cell, List, ListItem, ListState, Row, Table};
 use tui::{
     backend::CrosstermBackend,
     layout::{Alignment, Constraint, Direction, Layout},
@@ -68,6 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tx, rx) = mpsc::channel();
     let tick_rate = Duration::from_millis(200);
 
+    // Input Handling Thread
     thread::spawn(move || {
         let mut last_tick = Instant::now();
         loop {
@@ -97,6 +101,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let menu_titles = vec!["Home", "Pets", "Add", "Delete", "Quit"];
     let mut active_menu_item = MenuItem::Home;
 
+    let mut pet_list_state = ListState::default();
+    pet_list_state.select(Some(0));
+
+    // UI LOOP
     loop {
         terminal.draw(|rect| {
             let size = rect.size();
@@ -149,10 +157,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .divider(Span::raw("|"));
             rect.render_widget(tabs, chunks[0]);
 
-
             match active_menu_item {
                 MenuItem::Home => rect.render_widget(render_home(), chunks[1]),
-                MenuItem::Pets => {}
+                MenuItem::Pets => {
+                    let pets_chunks = Layout::default()
+                        .direction(Direction::Horizontal)
+                        .constraints(
+                            [Constraint::Percentage(20), Constraint::Percentage(80)].as_ref(),
+                        )
+                        .split(chunks[1]);
+                    let (left, right) = render_pets(&pet_list_state);
+                    rect.render_stateful_widget(left, pets_chunks[0], &mut pet_list_state);
+                    rect.render_widget(right, pets_chunks[1]);
+                }
             }
         })?;
 
@@ -166,6 +183,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 KeyCode::Char('h') => active_menu_item = MenuItem::Home,
                 KeyCode::Char('p') => active_menu_item = MenuItem::Pets,
+                KeyCode::Char('a') => {
+                    add_random_pet_to_db().expect("can add random pet.");
+                }
+                KeyCode::Char('d') => {
+                    remove_pet_at_index(&mut pet_list_state)
+                        .expect("remove pet at selected index.");
+                }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    if let Some(selected) = pet_list_state.selected() {
+                        let amount_pets = read_db().expect("can fetch pet list").len();
+                        if selected >= amount_pets - 1 {
+                            pet_list_state.select(Some(0));
+                        } else {
+                            pet_list_state.select(Some(selected + 1));
+                        }
+                    }
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    if let Some(selected) = pet_list_state.selected() {
+                        let amount_pets = read_db().expect("can fetch pet list").len();
+                        if selected > 0 {
+                            pet_list_state.select(Some(selected - 1));
+                        } else {
+                            pet_list_state.select(Some(amount_pets - 1));
+                        }
+                    }
+                }
                 _ => {}
             },
             Event::Input(_) => {}
@@ -201,4 +245,138 @@ fn render_home<'a>() -> Paragraph<'a> {
         .border_type(BorderType::Plain),
     );
     home
+}
+
+fn read_db() -> Result<Vec<Pet>, Error> {
+    let db_content = fs::read_to_string(DB_PATH)?;
+    let parsed: Vec<Pet> = serde_json::from_str(&db_content)?;
+    Ok(parsed)
+}
+
+fn render_pets<'a>(pet_list_state: &ListState) -> (List<'a>, Table<'a>) {
+    let pets = Block::default()
+        .borders(Borders::ALL)
+        .style(Style::default().fg(Color::White))
+        .title("Pets")
+        .border_type(BorderType::Plain);
+
+    let pet_list = read_db().expect("can fetch pet list");
+    let items: Vec<_> = pet_list
+        .iter()
+        .map(|pet| {
+            ListItem::new(Spans::from(vec![Span::styled(
+                pet.name.clone(),
+                Style::default(),
+            )]))
+        })
+        .collect();
+
+    let list = List::new(items).block(pets).highlight_style(
+        Style::default()
+            .bg(Color::Yellow)
+            .fg(Color::Black)
+            .add_modifier(Modifier::BOLD),
+    );
+
+    let selected_pet_row = match pet_list.get(
+        pet_list_state
+            .selected()
+            .expect("there is always a selected pet"),
+    ) {
+        Some(pet_data) => Row::new(vec![
+            Cell::from(Span::raw(pet_data.id.to_string())),
+            Cell::from(Span::raw(pet_data.name.clone())),
+            Cell::from(Span::raw(pet_data.category.clone())),
+            Cell::from(Span::raw(pet_data.age.to_string())),
+            Cell::from(Span::raw(pet_data.created_at.to_string())),
+        ]),
+        None => Row::default(),
+    };
+
+    let pet_detail = Table::new(vec![selected_pet_row])
+        .header(Row::new(vec![
+            Cell::from(Span::styled(
+                "ID",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Cell::from(Span::styled(
+                "Name",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Cell::from(Span::styled(
+                "Category",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Cell::from(Span::styled(
+                "Age",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Cell::from(Span::styled(
+                "Created At",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+        ]))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .style(Style::default().fg(Color::White))
+                .title("Detail")
+                .border_type(BorderType::Plain),
+        )
+        .widths(&[
+            Constraint::Percentage(5),
+            Constraint::Percentage(20),
+            Constraint::Percentage(20),
+            Constraint::Percentage(5),
+            Constraint::Percentage(20),
+        ]);
+
+    (list, pet_detail)
+}
+
+fn add_random_pet_to_db() -> Result<Vec<Pet>, Error> {
+    let mut rng = rand::thread_rng();
+    let db_content = fs::read_to_string(DB_PATH)?;
+    let mut parsed: Vec<Pet> = serde_json::from_str(&db_content)?;
+    let catsdogs = match rng.gen_range(0..=1) {
+        0 => "cats",
+        _ => "dogs",
+    };
+
+    let random_pet = Pet {
+        id: rng.gen_range(0..9999999),
+        name: rng
+            .clone()
+            .sample_iter(Alphanumeric)
+            .take(10)
+            .map(char::from)
+            .collect(),
+        category: catsdogs.to_owned(),
+        age: rng.gen_range(1..=15),
+        created_at: Utc::now(),
+    };
+
+    parsed.push(random_pet);
+    fs::write(DB_PATH, &serde_json::to_vec(&parsed)?)?;
+    Ok(parsed)
+}
+
+fn remove_pet_at_index(pet_list_state: &mut ListState) -> Result<(), Error> {
+    if let Some(selected) = pet_list_state.selected() {
+        let db_content = fs::read_to_string(DB_PATH)?;
+        let mut parsed: Vec<Pet> = serde_json::from_str(&db_content)?;
+
+        if selected >= parsed.len() {
+            return Ok(())
+        }
+
+        parsed.remove(selected);
+        fs::write(DB_PATH, &serde_json::to_vec(&parsed)?)?;
+        if selected == 0 {
+            pet_list_state.select(Some(0));
+        } else {
+            pet_list_state.select(Some(selected - 1));
+        }
+    }
+    Ok(())
 }
